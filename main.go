@@ -8,5 +8,5 @@ func main() {
 
 func aplus(a int, b int) int {
 
-	return a - b
+	return a + b
 }
