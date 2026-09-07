@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -31,11 +33,39 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test -coverprofile=coverage.out ./...
-
-      - name: Coverage summary
         run: |
+          set -euo pipefail
+          go test -coverprofile=coverage.out ./...
+
           echo "## Go coverage" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            current_coverage=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%", "", $3); print $3 }')
+            base_dir="$RUNNER_TEMP/base-revision"
+            base_profile="$RUNNER_TEMP/base-coverage.out"
+            base_sha="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+
+            git worktree add --detach "$base_dir" "$base_sha"
+            trap 'git worktree remove --force "$base_dir"' EXIT
+
+            (
+              cd "$base_dir"
+              go test -coverprofile="$base_profile" ./...
+            )
+
+            base_coverage=$(go tool cover -func="$base_profile" | awk '/^total:/ { gsub("%", "", $3); print $3 }')
+
+            echo "Current coverage: ${current_coverage}%"
+            echo "Base coverage: ${base_coverage}%"
+            printf 'Current coverage: %s%%\nBase coverage: %s%%\n' "$current_coverage" "$base_coverage" >> "$GITHUB_STEP_SUMMARY"
+
+            awk -v current="$current_coverage" -v base="$base_coverage" 'BEGIN {
+              if (current < base) {
+                printf "Coverage decreased from %.2f%% to %.2f%%\n", base, current
+                exit 1
+              }
+            }'
+          fi
