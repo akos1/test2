@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Format
+        run: go fmt ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          go build -o dist/test2 .
+
+      - name: Upload pull request binary
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test2-${{ github.event.pull_request.number }}
+          path: dist/test2
+          if-no-files-found: error
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          go test -coverprofile=coverage.out ./...
+
+          echo "## Go coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            current_coverage=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%", "", $3); print $3 }')
+            base_dir="$RUNNER_TEMP/base-revision"
+            base_profile="$RUNNER_TEMP/base-coverage.out"
+            base_sha="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+
+            git worktree add --detach "$base_dir" "$base_sha"
+            trap 'git worktree remove --force "$base_dir"' EXIT
+
+            if [[ ! -f "$base_dir/go.mod" ]]; then
+              echo "Base revision has no go.mod; skipping coverage comparison."
+              echo "Base revision has no go.mod; coverage comparison skipped." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            (
+              cd "$base_dir"
+              go test -coverprofile="$base_profile" ./...
+            )
+
+            base_coverage=$(go tool cover -func="$base_profile" | awk '/^total:/ { gsub("%", "", $3); print $3 }')
+
+            echo "Current coverage: ${current_coverage}%"
+            echo "Base coverage: ${base_coverage}%"
+            printf 'Current coverage: %s%%\nBase coverage: %s%%\n' "$current_coverage" "$base_coverage" >> "$GITHUB_STEP_SUMMARY"
+
+            awk -v current="$current_coverage" -v base="$base_coverage" 'BEGIN {
+              if (current < base) {
+                printf "Coverage decreased from %.2f%% to %.2f%%\n", base, current
+                exit 1
+              }
+            }'
+          fi
+
+      - name: Upload coverage artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.out
+          if-no-files-found: error
+
+      - name: Publish binary to GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/test2 --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/test2 \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
