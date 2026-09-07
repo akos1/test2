@@ -31,4 +31,11 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test -cover ./...
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: |
+          echo "## Go coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
