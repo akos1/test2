@@ -51,6 +51,12 @@ jobs:
             git worktree add --detach "$base_dir" "$base_sha"
             trap 'git worktree remove --force "$base_dir"' EXIT
 
+            if [[ ! -f "$base_dir/go.mod" ]]; then
+              echo "Base revision has no go.mod; skipping coverage comparison."
+              echo "Base revision has no go.mod; coverage comparison skipped." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
             (
               cd "$base_dir"
               go test -coverprofile="$base_profile" ./...
